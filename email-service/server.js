@@ -72,6 +72,7 @@ app.post('/send-otp', async (req, res) => {
     const otpRef = db.ref(`otp/${emailHash}`);
     
     console.log('💾 Storing OTP in Firebase:', emailHash, otp);
+    console.log('🌐 Firebase Database URL:', process.env.FIREBASE_DATABASE_URL || 'https://delta-65-default-rtdb.asia-southeast1.firebasedatabase.app');
     
     try {
       await otpRef.update({ 
@@ -79,6 +80,12 @@ app.post('/send-otp', async (req, res) => {
         generatedAt: Date.now()
       });
       console.log('✅ OTP stored successfully in Firebase');
+      
+      // Verify the data was stored
+      const verifySnapshot = await otpRef.once('value');
+      const verifyData = verifySnapshot.val();
+      console.log('🔍 Verification - Data in Firebase:', verifyData);
+      
     } catch (firebaseError) {
       console.error('❌ Error storing OTP in Firebase:', firebaseError);
       throw firebaseError;
