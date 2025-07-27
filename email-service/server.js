@@ -1,10 +1,32 @@
 const express = require('express');
 const nodemailer = require('nodemailer');
 const cors = require('cors');
+const admin = require('firebase-admin');
 require('dotenv').config();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+// Initialize Firebase Admin
+const serviceAccount = {
+  type: process.env.FIREBASE_TYPE || 'service_account',
+  project_id: process.env.FIREBASE_PROJECT_ID || 'delta-65',
+  private_key_id: process.env.FIREBASE_PRIVATE_KEY_ID,
+  private_key: process.env.FIREBASE_PRIVATE_KEY ? process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n') : undefined,
+  client_email: process.env.FIREBASE_CLIENT_EMAIL,
+  client_id: process.env.FIREBASE_CLIENT_ID,
+  auth_uri: process.env.FIREBASE_AUTH_URI || 'https://accounts.google.com/o/oauth2/auth',
+  token_uri: process.env.FIREBASE_TOKEN_URI || 'https://oauth2.googleapis.com/token',
+  auth_provider_x509_cert_url: process.env.FIREBASE_AUTH_PROVIDER_X509_CERT_URL || 'https://www.googleapis.com/oauth2/v1/certs',
+  client_x509_cert_url: process.env.FIREBASE_CLIENT_X509_CERT_URL
+};
+
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount),
+  databaseURL: process.env.FIREBASE_DATABASE_URL || 'https://delta-65-default-rtdb.firebaseio.com'
+});
+
+const db = admin.database();
 
 // Middleware
 app.use(cors());
@@ -31,15 +53,27 @@ app.get('/', (req, res) => {
 // Send OTP email endpoint
 app.post('/send-otp', async (req, res) => {
   try {
-    const { email, otp } = req.body;
+    const { email } = req.body;
     
     // Validate input
-    if (!email || !otp) {
+    if (!email) {
       return res.status(400).json({
         success: false,
-        error: 'Email and OTP are required'
+        error: 'Email is required'
       });
     }
+    
+    // Generate unique OTP
+    const otp = await generateUniqueOtp();
+    console.log(`🔐 Generated unique OTP: ${otp} for ${email}`);
+    
+    // Store OTP in Firebase
+    const emailHash = email.replace(/[.#$[\]]/g, '_');
+    const otpRef = db.ref(`otp/${emailHash}`);
+    await otpRef.update({ 
+      otp: otp,
+      generatedAt: Date.now()
+    });
     
     // Email template
     const mailOptions = {
@@ -107,6 +141,90 @@ Project Delta Team
       success: false,
       error: 'Failed to send email',
       details: error.message
+    });
+  }
+});
+
+// Generate unique OTP function
+async function generateUniqueOtp() {
+  let attempts = 0;
+  const maxAttempts = 10;
+  
+  while (attempts < maxAttempts) {
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    
+    // Check if OTP already exists in database
+    const otpRef = db.ref('otp');
+    const snapshot = await otpRef.once('value');
+    const otps = snapshot.val();
+    
+    if (!otps) {
+      return otp; // No OTPs exist, this one is unique
+    }
+    
+    // Check if this OTP is already in use
+    const otpExists = Object.values(otps).some(otpData => otpData.otp === otp);
+    
+    if (!otpExists) {
+      return otp; // OTP is unique
+    }
+    
+    attempts++;
+    console.log(`🔄 OTP ${otp} already exists, generating new one... (attempt ${attempts})`);
+  }
+  
+  throw new Error('Failed to generate unique OTP after maximum attempts');
+}
+
+// Cleanup expired OTPs function
+async function cleanupExpiredOtps() {
+  try {
+    console.log('🧹 Starting OTP cleanup...');
+    const otpRef = db.ref('otp');
+    const snapshot = await otpRef.once('value');
+    const otps = snapshot.val();
+    
+    if (!otps) {
+      console.log('✅ No OTPs to clean up');
+      return;
+    }
+    
+    const now = Date.now();
+    let cleanedCount = 0;
+    
+    for (const [emailHash, otpData] of Object.entries(otps)) {
+      if (otpData.expiresAt && now > otpData.expiresAt) {
+        await otpRef.child(emailHash).remove();
+        cleanedCount++;
+        console.log(`🗑️ Cleaned expired OTP for: ${emailHash}`);
+      }
+    }
+    
+    console.log(`✅ Cleanup complete. Removed ${cleanedCount} expired OTPs`);
+  } catch (error) {
+    console.error('❌ Error during OTP cleanup:', error);
+  }
+}
+
+// Schedule cleanup every 5 minutes
+setInterval(cleanupExpiredOtps, 5 * 60 * 1000);
+
+// Run initial cleanup on startup
+cleanupExpiredOtps();
+
+// Manual cleanup endpoint
+app.post('/cleanup-otps', async (req, res) => {
+  try {
+    await cleanupExpiredOtps();
+    res.json({
+      success: true,
+      message: 'OTP cleanup completed'
+    });
+  } catch (error) {
+    console.error('❌ Error in manual cleanup:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Cleanup failed'
     });
   }
 });
