@@ -70,10 +70,19 @@ app.post('/send-otp', async (req, res) => {
     // Store OTP in Firebase
     const emailHash = email.replace(/[.#$[\]]/g, '_');
     const otpRef = db.ref(`otp/${emailHash}`);
-    await otpRef.update({ 
-      otp: otp,
-      generatedAt: Date.now()
-    });
+    
+    console.log('💾 Storing OTP in Firebase:', emailHash, otp);
+    
+    try {
+      await otpRef.update({ 
+        otp: otp,
+        generatedAt: Date.now()
+      });
+      console.log('✅ OTP stored successfully in Firebase');
+    } catch (firebaseError) {
+      console.error('❌ Error storing OTP in Firebase:', firebaseError);
+      throw firebaseError;
+    }
     
     // Email template
     const mailOptions = {
