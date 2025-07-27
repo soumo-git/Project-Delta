@@ -75,8 +75,12 @@ app.post('/send-otp', async (req, res) => {
     console.log('🌐 Firebase Database URL:', process.env.FIREBASE_DATABASE_URL || 'https://delta-65-default-rtdb.asia-southeast1.firebasedatabase.app');
     
     try {
-      await otpRef.update({ 
+      await otpRef.set({ 
+        email: email,
         otp: otp,
+        expiresAt: Date.now() + (5 * 60 * 1000), // 5 minutes
+        attempts: 0,
+        sentAt: Date.now(),
         generatedAt: Date.now()
       });
       console.log('✅ OTP stored successfully in Firebase');
