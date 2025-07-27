@@ -23,7 +23,7 @@ const serviceAccount = {
 
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
-  databaseURL: process.env.FIREBASE_DATABASE_URL || 'https://delta-65-default-rtdb.firebaseio.com'
+  databaseURL: process.env.FIREBASE_DATABASE_URL || 'https://delta-65-default-rtdb.asia-southeast1.firebasedatabase.app'
 });
 
 const db = admin.database();
