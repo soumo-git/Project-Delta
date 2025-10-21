@@ -88,24 +88,51 @@ const hasValidGmailCredentials =
 
 if (hasValidGmailCredentials) {
   try {
-    transporter = nodemailer.createTransport({
+    const gmailAuth = {
+      user: process.env.GMAIL_USER,
+      pass: process.env.GMAIL_APP_PASSWORD
+    };
+    const gmailSmtpsConfig = {
       host: 'smtp.gmail.com',
       port: 465,
       secure: true,
-      auth: {
-        user: process.env.GMAIL_USER,
-        pass: process.env.GMAIL_APP_PASSWORD
-      },
+      auth: gmailAuth,
       connectionTimeout: 20000,
       greetingTimeout: 20000
-    });
+    };
+    const gmailStartTlsConfig = {
+      host: 'smtp.gmail.com',
+      port: 587,
+      secure: false,
+      requireTLS: true,
+      auth: gmailAuth,
+      connectionTimeout: 20000,
+      greetingTimeout: 20000
+    };
+
+    transporter = nodemailer.createTransport(gmailSmtpsConfig);
     
     // Verify the connection
-    transporter.verify((error, success) => {
+    transporter.verify(async (error, success) => {
       if (error) {
-        console.error('❌ Gmail transporter verification failed:', error);
-        console.log('⚠️ Falling back to mock email transporter');
-        createMockTransporter();
+        console.error('❌ Gmail transporter verification failed (SMTPS 465):', error);
+        console.log('⚠️ Retrying Gmail transporter with STARTTLS (port 587)');
+        try {
+          const fallbackTransporter = nodemailer.createTransport(gmailStartTlsConfig);
+          try {
+            await fallbackTransporter.verify();
+            transporter = fallbackTransporter;
+            console.log('✅ Email transporter initialized with Gmail using STARTTLS');
+          } catch (fallbackError) {
+            console.error('❌ Gmail transporter verification failed (STARTTLS 587):', fallbackError);
+            console.log('⚠️ Falling back to mock email transporter');
+            createMockTransporter();
+          }
+        } catch (creationError) {
+          console.error('❌ Failed to create Gmail transporter fallback:', creationError);
+          console.log('⚠️ Falling back to mock email transporter');
+          createMockTransporter();
+        }
       } else {
         console.log('✅ Email transporter initialized with Gmail and verified');
       }
