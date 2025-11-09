@@ -85,6 +85,19 @@ Content-Type: application/json
 }
 ```
 
+### Send Password Reset Email
+```
+POST https://your-service.onrender.com/send-password-reset
+Content-Type: application/json
+
+{
+  "email": "user@example.com",
+  "actionUrl": "https://your-app-url.com" // Optional: URL to redirect after password reset
+}
+```
+
+This endpoint uses the Firebase Admin SDK to generate a password reset link and sends it via the custom email service. It's particularly useful for Microsoft 365/Outlook email addresses that often block Firebase's default password reset emails.
+
 ### Test Email
 ```
 POST https://your-service.onrender.com/test-email
@@ -173,6 +186,16 @@ curl -X POST https://your-service.onrender.com/test-email \
 2. **"Service not found"**: Verify the Render URL is correct
 3. **"CORS error"**: Make sure CORS is enabled
 4. **"Environment variables"**: Check Render dashboard settings
+5. **"Microsoft 365/Outlook blocking emails"**: The service now automatically detects Microsoft email domains and uses a custom email handler to bypass filtering issues
+
+### Microsoft 365/Outlook Email Issues:
+
+Microsoft 365 and Outlook often block Firebase authentication emails. This service includes a custom solution that:
+
+- Detects Microsoft email domains automatically
+- Uses Firebase Admin SDK to generate password reset links
+- Sends emails through our custom SMTP server instead of Firebase
+- Uses professional email templates that are less likely to be filtered
 
 ### Logs:
 Check Render dashboard → **"Logs"** tab for detailed error information.
@@ -183,4 +206,4 @@ If you encounter issues:
 1. Check Render logs
 2. Verify Gmail credentials
 3. Test with the health check endpoint
-4. Ensure environment variables are set correctly 
+4. Ensure environment variables are set correctly

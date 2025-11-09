@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Dependencies
 node_modules/
 npm-debug.log*
@@ -28,6 +29,19 @@ Thumbs.db
 
 # Logs
 logs
+=======
+# Environment variables
+.env
+
+# Firebase service account
+firebase-service-account.json
+firebase-service-account.json.json
+
+# Node modules
+node_modules/
+
+# Logs
+>>>>>>> abb0fee (Migrate from Gmail/Nodemailer to Brevo API)
 *.log
 
 # Runtime data
@@ -39,10 +53,15 @@ pids
 # Coverage directory used by tools like istanbul
 coverage/
 
+<<<<<<< HEAD
 # nyc test coverage
 .nyc_output
 
 # Dependency directories
+=======
+# Dependency directories
+node_modules/
+>>>>>>> abb0fee (Migrate from Gmail/Nodemailer to Brevo API)
 jspm_packages/
 
 # Optional npm cache directory
@@ -55,6 +74,7 @@ jspm_packages/
 *.tgz
 
 # Yarn Integrity file
+<<<<<<< HEAD
 .yarn-integrity
 
 # dotenv environment variables file
@@ -84,3 +104,6 @@ jspm_packages/
 
 # TernJS port file
 .tern-port 
+=======
+.yarn-integrity 
+>>>>>>> abb0fee (Migrate from Gmail/Nodemailer to Brevo API)
