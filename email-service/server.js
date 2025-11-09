@@ -1,5 +1,5 @@
 const express = require('express');
-const nodemailer = require('nodemailer');
+const Brevo = require('@getbrevo/brevo');
 const cors = require('cors');
 const admin = require('firebase-admin');
 require('dotenv').config();
@@ -74,97 +74,44 @@ if (!adminInitialized) {
 app.use(cors());
 app.use(express.json());
 
-// Create transporter using Gmail or mock for testing
-let transporter;
+// Initialize Brevo client or mock for testing
+let brevoClient;
+let brevoReady = false;
 
-// Check if Gmail credentials are available and properly set
-const hasValidGmailCredentials = 
-  process.env.GMAIL_USER && 
-  process.env.GMAIL_APP_PASSWORD && 
-  process.env.GMAIL_USER !== 'your-email@gmail.com' && 
-  process.env.GMAIL_USER !== 'your-real-email@gmail.com' && 
-  process.env.GMAIL_APP_PASSWORD !== 'your-app-password' && 
-  process.env.GMAIL_APP_PASSWORD !== 'your-real-app-password';
-
-if (hasValidGmailCredentials) {
+if (process.env.BREVO_API_KEY) {
   try {
-    const gmailAuth = {
-      user: process.env.GMAIL_USER,
-      pass: process.env.GMAIL_APP_PASSWORD
-    };
-    const gmailSmtpsConfig = {
-      host: 'smtp.gmail.com',
-      port: 465,
-      secure: true,
-      auth: gmailAuth,
-      connectionTimeout: 20000,
-      greetingTimeout: 20000
-    };
-    const gmailStartTlsConfig = {
-      host: 'smtp.gmail.com',
-      port: 587,
-      secure: false,
-      requireTLS: true,
-      auth: gmailAuth,
-      connectionTimeout: 20000,
-      greetingTimeout: 20000
-    };
-
-    transporter = nodemailer.createTransport(gmailSmtpsConfig);
-    
-    // Verify the connection
-    transporter.verify(async (error, success) => {
-      if (error) {
-        console.error('❌ Gmail transporter verification failed (SMTPS 465):', error);
-        console.log('⚠️ Retrying Gmail transporter with STARTTLS (port 587)');
-        try {
-          const fallbackTransporter = nodemailer.createTransport(gmailStartTlsConfig);
-          try {
-            await fallbackTransporter.verify();
-            transporter = fallbackTransporter;
-            console.log('✅ Email transporter initialized with Gmail using STARTTLS');
-          } catch (fallbackError) {
-            console.error('❌ Gmail transporter verification failed (STARTTLS 587):', fallbackError);
-            console.log('⚠️ Falling back to mock email transporter');
-            createMockTransporter();
-          }
-        } catch (creationError) {
-          console.error('❌ Failed to create Gmail transporter fallback:', creationError);
-          console.log('⚠️ Falling back to mock email transporter');
-          createMockTransporter();
-        }
-      } else {
-        console.log('✅ Email transporter initialized with Gmail and verified');
-      }
-    });
+    brevoClient = new Brevo.TransactionalEmailsApi();
+    brevoClient.setApiKey(Brevo.TransactionalEmailsApiApiKeys.apiKey, process.env.BREVO_API_KEY);
+    brevoReady = true;
+    console.log('✅ Brevo client initialized');
   } catch (error) {
-    console.error('❌ Failed to create Gmail transporter:', error);
-    console.log('⚠️ Falling back to mock email transporter');
-    createMockTransporter();
+    console.error('❌ Failed to initialize Brevo client:', error);
   }
 } else {
-  console.log('⚠️ Valid Gmail credentials not found, using mock email transporter');
-  createMockTransporter();
+  console.log('⚠️ BREVO_API_KEY not set, using mock email sender');
 }
 
-// Function to create a mock transporter
-function createMockTransporter() {
-  transporter = {
-    sendMail: async (mailOptions) => {
-      console.log('📧 MOCK EMAIL SENDING:');
-      console.log('   To:', mailOptions.to);
-      console.log('   Subject:', mailOptions.subject);
-      console.log('   Text:', mailOptions.text ? mailOptions.text.substring(0, 100) + '...' : 'No text content');
-      console.log('   HTML:', mailOptions.html ? 'HTML content available' : 'No HTML content');
-      
-      // Return a mock success response
-      return {
-        messageId: 'mock-message-id-' + Date.now(),
-        response: 'Mock email sent successfully'
-      };
-    },
-    verify: async () => true
-  };
+async function sendEmail({ to, subject, html, text }) {
+  if (brevoReady && brevoClient) {
+    const sendSmtpEmail = {
+      sender: {
+        email: process.env.BREVO_SENDER_EMAIL || 'no-reply@project-delta.local',
+        name: process.env.BREVO_SENDER_NAME || 'Project Delta'
+      },
+      to: [{ email: to }],
+      subject,
+      htmlContent: html,
+      textContent: text
+    };
+    const resp = await brevoClient.sendTransacEmail(sendSmtpEmail);
+    return resp;
+  }
+  console.log('📧 MOCK EMAIL SENDING:');
+  console.log('   To:', to);
+  console.log('   Subject:', subject);
+  console.log('   Text:', text ? String(text).substring(0, 100) + '...' : 'No text content');
+  console.log('   HTML:', html ? 'HTML content available' : 'No HTML content');
+  return { messageId: 'mock-message-id-' + Date.now(), response: 'Mock email sent successfully' };
 }
 
 // Health check endpoint
@@ -222,41 +169,38 @@ app.post('/send-otp', async (req, res) => {
     }
     
     // Email template
-    const mailOptions = {
-      from: process.env.GMAIL_USER || 'your-email@gmail.com',
-      to: email,
-      subject: '🔐 Your Project Delta Verification Code',
-      html: `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background-color: #000; color: #fff;">
-          <div style="text-align: center; margin-bottom: 30px;">
-            <h1 style="color: #22c55e; margin: 0; font-size: 24px;">Project Delta</h1>
-            <p style="color: #666; margin: 10px 0;">Verification Code</p>
-          </div>
-          
-          <div style="background-color: #111; border: 2px solid #22c55e; border-radius: 10px; padding: 30px; text-align: center; margin: 20px 0;">
-            <h2 style="color: #22c55e; margin: 0 0 20px 0; font-size: 18px;">Your Verification Code</h2>
-            <div style="background-color: #000; border: 1px solid #22c55e; border-radius: 8px; padding: 20px; margin: 20px 0;">
-              <span style="font-size: 32px; font-weight: bold; color: #22c55e; letter-spacing: 8px; font-family: 'Courier New', monospace;">${otp}</span>
-            </div>
-            <p style="color: #fbbf24; margin: 10px 0; font-size: 14px;">⚠️ This code will expire in 5 minutes</p>
-          </div>
-          
-          <div style="margin-top: 30px; padding: 20px; background-color: #111; border-radius: 8px;">
-            <p style="color: #666; margin: 0; font-size: 14px; line-height: 1.5;">
-              If you didn't request this verification code, please ignore this email. 
-              This code is for your Project Delta account verification.
-            </p>
-          </div>
-          
-          <div style="text-align: center; margin-top: 30px; padding-top: 20px; border-top: 1px solid #333;">
-            <p style="color: #666; margin: 0; font-size: 12px;">
-              Project Delta Team<br>
-              Parental Control Dashboard
-            </p>
-          </div>
+    const subject = '🔐 Your Project Delta Verification Code';
+    const html = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background-color: #000; color: #fff;">
+        <div style="text-align: center; margin-bottom: 30px;">
+          <h1 style="color: #22c55e; margin: 0; font-size: 24px;">Project Delta</h1>
+          <p style="color: #666; margin: 10px 0;">Verification Code</p>
         </div>
-      `,
-      text: `
+        
+        <div style="background-color: #111; border: 2px solid #22c55e; border-radius: 10px; padding: 30px; text-align: center; margin: 20px 0;">
+          <h2 style="color: #22c55e; margin: 0 0 20px 0; font-size: 18px;">Your Verification Code</h2>
+          <div style="background-color: #000; border: 1px solid #22c55e; border-radius: 8px; padding: 20px; margin: 20px 0;">
+            <span style="font-size: 32px; font-weight: bold; color: #22c55e; letter-spacing: 8px; font-family: 'Courier New', monospace;">${otp}</span>
+          </div>
+          <p style="color: #fbbf24; margin: 10px 0; font-size: 14px;">⚠️ This code will expire in 5 minutes</p>
+        </div>
+        
+        <div style="margin-top: 30px; padding: 20px; background-color: #111; border-radius: 8px;">
+          <p style="color: #666; margin: 0; font-size: 14px; line-height: 1.5;">
+            If you didn't request this verification code, please ignore this email. 
+            This code is for your Project Delta account verification.
+          </p>
+        </div>
+        
+        <div style="text-align: center; margin-top: 30px; padding-top: 20px; border-top: 1px solid #333;">
+          <p style="color: #666; margin: 0; font-size: 12px;">
+            Project Delta Team<br>
+            Parental Control Dashboard
+          </p>
+        </div>
+      </div>
+    `;
+    const text = `
 Project Delta - Verification Code
 
 Your verification code is: ${otp}
@@ -267,17 +211,17 @@ If you didn't request this code, please ignore this email.
 
 Best regards,
 Project Delta Team
-      `
-    };
+    `;
     
-    // Send email
-    const info = await transporter.sendMail(mailOptions);
+    // Send email via Brevo or mock
+    const info = await sendEmail({ to: email, subject, html, text });
     
-    console.log('✅ Email sent successfully:', info.messageId);
+    const messageId = (info && (info.messageId || (info.messageIds && info.messageIds[0]))) || 'unknown';
+    console.log('✅ Email sent successfully:', messageId);
     
     res.json({
       success: true,
-      messageId: info.messageId,
+      messageId: messageId,
       message: 'OTP email sent successfully'
     });
     
@@ -287,90 +231,6 @@ Project Delta Team
       success: false,
       error: 'Failed to send email',
       details: error.message
-    });
-  }
-});
-
-// Generate unique OTP function
-async function generateUniqueOtp() {
-  let attempts = 0;
-  const maxAttempts = 10;
-  
-  while (attempts < maxAttempts) {
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    
-    // Check if OTP already exists in database
-    const otpRef = db.ref('otp');
-    const snapshot = await otpRef.once('value');
-    const otps = snapshot.val();
-    
-    if (!otps) {
-      return otp; // No OTPs exist, this one is unique
-    }
-    
-    // Check if this OTP is already in use
-    const otpExists = Object.values(otps).some(otpData => otpData.otp === otp);
-    
-    if (!otpExists) {
-      return otp; // OTP is unique
-    }
-    
-    attempts++;
-    console.log(`🔄 OTP ${otp} already exists, generating new one... (attempt ${attempts})`);
-  }
-  
-  throw new Error('Failed to generate unique OTP after maximum attempts');
-}
-
-// Cleanup expired OTPs function
-async function cleanupExpiredOtps() {
-  try {
-    console.log('🧹 Starting OTP cleanup...');
-    const otpRef = db.ref('otp');
-    const snapshot = await otpRef.once('value');
-    const otps = snapshot.val();
-    
-    if (!otps) {
-      console.log('✅ No OTPs to clean up');
-      return;
-    }
-    
-    const now = Date.now();
-    let cleanedCount = 0;
-    
-    for (const [emailHash, otpData] of Object.entries(otps)) {
-      if (otpData.expiresAt && now > otpData.expiresAt) {
-        await otpRef.child(emailHash).remove();
-        cleanedCount++;
-        console.log(`🗑️ Cleaned expired OTP for: ${emailHash}`);
-      }
-    }
-    
-    console.log(`✅ Cleanup complete. Removed ${cleanedCount} expired OTPs`);
-  } catch (error) {
-    console.error('❌ Error during OTP cleanup:', error);
-  }
-}
-
-// Schedule cleanup every 5 minutes
-setInterval(cleanupExpiredOtps, 5 * 60 * 1000);
-
-// Run initial cleanup on startup
-cleanupExpiredOtps();
-
-// Manual cleanup endpoint
-app.post('/cleanup-otps', async (req, res) => {
-  try {
-    await cleanupExpiredOtps();
-    res.json({
-      success: true,
-      message: 'OTP cleanup completed'
-    });
-  } catch (error) {
-    console.error('❌ Error in manual cleanup:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Cleanup failed'
     });
   }
 });
@@ -387,25 +247,21 @@ app.post('/test-email', async (req, res) => {
       });
     }
     
-    const mailOptions = {
-      from: process.env.GMAIL_USER || 'your-email@gmail.com',
-      to: email,
-      subject: '🧪 Project Delta - Email Service Test',
-      text: 'This is a test email from Project Delta Email Service on Render. If you receive this, your email setup is working correctly!',
-      html: `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background-color: #000; color: #fff;">
-          <h1 style="color: #22c55e; text-align: center;">🧪 Email Service Test</h1>
-          <p style="color: #fff; text-align: center;">This is a test email from Project Delta Email Service on Render.</p>
-          <p style="color: #22c55e; text-align: center; font-weight: bold;">✅ If you receive this, your email setup is working correctly!</p>
-        </div>
-      `
-    };
+    const subject = '🧪 Project Delta - Email Service Test';
+    const text = 'This is a test email from Project Delta Email Service on Render. If you receive this, your email setup is working correctly!';
+    const html = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background-color: #000; color: #fff;">
+        <h1 style="color: #22c55e; text-align: center;">🧪 Email Service Test</h1>
+        <p style="color: #fff; text-align: center;">This is a test email from Project Delta Email Service on Render.</p>
+        <p style="color: #22c55e; text-align: center; font-weight: bold;">✅ If you receive this, your email setup is working correctly!</p>
+      </div>
+    `;
     
-    const info = await transporter.sendMail(mailOptions);
+    const info = await sendEmail({ to: email, subject, html, text });
     
     res.json({
       success: true,
-      messageId: info.messageId,
+      messageId: (info && (info.messageId || (info.messageIds && info.messageIds[0]))) || 'unknown',
       message: 'Test email sent successfully!'
     });
     
@@ -464,45 +320,42 @@ app.post('/send-password-reset', async (req, res) => {
     }
     
     // Email template
-    const mailOptions = {
-      from: process.env.GMAIL_USER || 'your-email@gmail.com',
-      to: email,
-      subject: '🔐 Reset Your Project Delta Password',
-      html: `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background-color: #000; color: #fff;">
-          <div style="text-align: center; margin-bottom: 30px;">
-            <h1 style="color: #22c55e; margin: 0; font-size: 24px;">Project Delta</h1>
-            <p style="color: #666; margin: 10px 0;">Password Reset</p>
+    const subject = '🔐 Reset Your Project Delta Password';
+    const html = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background-color: #000; color: #fff;">
+        <div style="text-align: center; margin-bottom: 30px;">
+          <h1 style="color: #22c55e; margin: 0; font-size: 24px;">Project Delta</h1>
+          <p style="color: #666; margin: 10px 0;">Password Reset</p>
+        </div>
+        
+        <div style="background-color: #111; border: 2px solid #22c55e; border-radius: 10px; padding: 30px; text-align: center; margin: 20px 0;">
+          <h2 style="color: #22c55e; margin: 0 0 20px 0; font-size: 18px;">Reset Your Password</h2>
+          <p style="color: #fff; margin: 20px 0; font-size: 16px;">Click the button below to reset your password:</p>
+          <div style="margin: 30px 0;">
+            <a href="${resetLink}" style="background-color: #22c55e; color: #000; text-decoration: none; padding: 12px 24px; border-radius: 5px; font-weight: bold; display: inline-block;">Reset Password</a>
           </div>
-          
-          <div style="background-color: #111; border: 2px solid #22c55e; border-radius: 10px; padding: 30px; text-align: center; margin: 20px 0;">
-            <h2 style="color: #22c55e; margin: 0 0 20px 0; font-size: 18px;">Reset Your Password</h2>
-            <p style="color: #fff; margin: 20px 0; font-size: 16px;">Click the button below to reset your password:</p>
-            <div style="margin: 30px 0;">
-              <a href="${resetLink}" style="background-color: #22c55e; color: #000; text-decoration: none; padding: 12px 24px; border-radius: 5px; font-weight: bold; display: inline-block;">Reset Password</a>
-            </div>
-            <p style="color: #fbbf24; margin: 10px 0; font-size: 14px;">⚠️ This link will expire in 1 hour</p>
-            <p style="color: #fff; margin: 20px 0; font-size: 14px;">If the button doesn't work, copy and paste this link into your browser:</p>
-            <div style="background-color: #000; border: 1px solid #22c55e; border-radius: 8px; padding: 10px; margin: 20px 0; word-break: break-all;">
-              <a href="${resetLink}" style="color: #22c55e; font-size: 14px; text-decoration: none;">${resetLink}</a>
-            </div>
-          </div>
-          
-          <div style="margin-top: 30px; padding: 20px; background-color: #111; border-radius: 8px;">
-            <p style="color: #666; margin: 0; font-size: 14px; line-height: 1.5;">
-              If you didn't request a password reset, please ignore this email or contact support if you have concerns.
-            </p>
-          </div>
-          
-          <div style="text-align: center; margin-top: 30px; padding-top: 20px; border-top: 1px solid #333;">
-            <p style="color: #666; margin: 0; font-size: 12px;">
-              Project Delta Team<br>
-              Parental Control Dashboard
-            </p>
+          <p style="color: #fbbf24; margin: 10px 0; font-size: 14px;">⚠️ This link will expire in 1 hour</p>
+          <p style="color: #fff; margin: 20px 0; font-size: 14px;">If the button doesn't work, copy and paste this link into your browser:</p>
+          <div style="background-color: #000; border: 1px solid #22c55e; border-radius: 8px; padding: 10px; margin: 20px 0; word-break: break-all;">
+            <a href="${resetLink}" style="color: #22c55e; font-size: 14px; text-decoration: none;">${resetLink}</a>
           </div>
         </div>
-      `,
-      text: `
+        
+        <div style="margin-top: 30px; padding: 20px; background-color: #111; border-radius: 8px;">
+          <p style="color: #666; margin: 0; font-size: 14px; line-height: 1.5;">
+            If you didn't request a password reset, please ignore this email or contact support if you have concerns.
+          </p>
+        </div>
+        
+        <div style="text-align: center; margin-top: 30px; padding-top: 20px; border-top: 1px solid #333;">
+          <p style="color: #666; margin: 0; font-size: 12px;">
+            Project Delta Team<br>
+            Parental Control Dashboard
+          </p>
+        </div>
+      </div>
+    `;
+    const text = `
 Project Delta - Password Reset
 
 Click the link below to reset your password:
@@ -514,15 +367,13 @@ If you didn't request a password reset, please ignore this email.
 
 Best regards,
 Project Delta Team
-      `
-    };
+    `;
     
-    // Send email using our transporter (which could be real or mock)
-    // No need to check for Gmail credentials as we already set up a mock transporter
-    // if credentials aren't available
-    const info = await transporter.sendMail(mailOptions);
+    // Send email using Brevo or mock
+    const info = await sendEmail({ to: email, subject, html, text });
     
-    console.log('✅ Password reset email sent successfully:', info.messageId);
+    const messageId = (info && (info.messageId || (info.messageIds && info.messageIds[0]))) || 'unknown';
+    console.log('✅ Password reset email sent successfully:', messageId);
     
     // Always include resetLink in development mode for testing
     const isDevelopment = process.env.NODE_ENV !== 'production';
