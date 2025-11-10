@@ -81,6 +81,54 @@ let brevoReady = false;
 // In-memory rate limiting map per email to prevent duplicate sends within a short window
 const otpSendLocks = new Map(); // key: emailHash, value: timestamp (ms)
 
+// In-memory fallback lock map for when Firebase transactions aren't available (dev/mocks)
+const localDistributedLocks = new Map(); // key: emailHash, value: expiresAt ms
+
+async function acquireOtpLock(emailHash, ttlMs = 15 * 1000) {
+  const now = Date.now();
+  // Prefer Firebase distributed lock
+  try {
+    if (adminInitialized && db && typeof db.ref === 'function') {
+      const lockRef = db.ref(`otpLocks/${emailHash}`);
+      if (typeof lockRef.transaction === 'function') {
+        const result = await lockRef.transaction((current) => {
+          if (!current || !current.expiresAt || current.expiresAt < now) {
+            return { expiresAt: now + ttlMs };
+          }
+          return; // abort: someone else holds the lock
+        });
+        // Some SDKs return an object with committed boolean, others may return snapshot only
+        const committed = result && (result.committed === true || (result.snapshot && result.snapshot.exists()));
+        const val = result && result.snapshot && result.snapshot.val ? result.snapshot.val() : undefined;
+        const hasLock = committed && val && val.expiresAt && val.expiresAt > now;
+        if (hasLock) return true;
+        return false;
+      }
+    }
+  } catch (e) {
+    console.warn('⚠️ Failed to acquire distributed lock via Firebase, falling back to local lock.', e);
+  }
+  // Fallback local lock
+  const existing = localDistributedLocks.get(emailHash) || 0;
+  if (existing > now) return false;
+  localDistributedLocks.set(emailHash, now + ttlMs);
+  return true;
+}
+
+async function releaseOtpLock(emailHash) {
+  // Release Firebase lock if available
+  try {
+    if (adminInitialized && db && typeof db.ref === 'function') {
+      const lockRef = db.ref(`otpLocks/${emailHash}`);
+      await lockRef.remove();
+    }
+  } catch (e) {
+    console.warn('⚠️ Failed to release distributed lock. It will expire naturally.', e);
+  }
+  // Release local lock
+  localDistributedLocks.delete(emailHash);
+}
+
 if (process.env.BREVO_API_KEY) {
   try {
     brevoClient = new Brevo.TransactionalEmailsApi();
@@ -185,6 +233,13 @@ app.post('/send-otp', async (req, res) => {
       });
     }
 
+    // Acquire a short-lived distributed lock to avoid concurrent duplicate sends across instances
+    const gotLock = await acquireOtpLock(emailHash);
+    if (!gotLock) {
+      console.log(`🔒 Another OTP request is in progress for ${email}. Skipping duplicate.`);
+      return res.json({ success: true, message: 'OTP already in progress. Please check your inbox.', inProgress: true });
+    }
+
     // Check if an unexpired OTP already exists; reuse it to avoid duplicates
     let existing = null;
     try {
@@ -278,7 +333,13 @@ Project Delta Team
     // Send email via Brevo or mock
     // Remember the last send timestamp early to mitigate concurrent quick requests
     otpSendLocks.set(emailHash, nowMs);
-    const info = await sendEmail({ to: email, subject, html, text });
+    let info;
+    try {
+      info = await sendEmail({ to: email, subject, html, text });
+    } finally {
+      // Always release the distributed lock
+      await releaseOtpLock(emailHash);
+    }
     
     const messageId = (info && (info.messageId || (info.messageIds && info.messageIds[0]))) || 'unknown';
     console.log('✅ Email sent successfully:', messageId);
@@ -299,7 +360,7 @@ Project Delta Team
   }
 });
 
-
+/* -------------------------------------------------------------*/
 
 // Password reset email endpoint
 app.post('/send-password-reset', async (req, res) => {
