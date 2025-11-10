@@ -78,6 +78,9 @@ app.use(express.json());
 let brevoClient;
 let brevoReady = false;
 
+// In-memory rate limiting map per email to prevent duplicate sends within a short window
+const otpSendLocks = new Map(); // key: emailHash, value: timestamp (ms)
+
 if (process.env.BREVO_API_KEY) {
   try {
     brevoClient = new Brevo.TransactionalEmailsApi();
@@ -165,33 +168,63 @@ app.post('/send-otp', async (req, res) => {
       });
     }
     
-    // Generate unique OTP
-    const otp = await generateUniqueOtp();
-    console.log(`🔐 Generated unique OTP: ${otp} for ${email}`);
-    
-    // Store OTP in Firebase
+    // Compute hash and refs
     const emailHash = email.replace(/[.#$[\]]/g, '_');
     const otpRef = db.ref(`otp/${emailHash}`);
-    
+    const RATE_LIMIT_MS = 60 * 1000; // 60s
+
+    // Rate limit: if we sent too recently, do not send another email
+    const now = Date.now();
+    const lastSendMs = otpSendLocks.get(emailHash) || 0;
+    if (now - lastSendMs < RATE_LIMIT_MS) {
+      console.log(`⏱️ Rate-limited OTP request for ${email}, last sent ${now - lastSendMs}ms ago.`);
+      return res.json({
+        success: true,
+        message: 'OTP already sent recently. Please check your inbox.',
+        rateLimited: true
+      });
+    }
+
+    // Check if an unexpired OTP already exists; reuse it to avoid duplicates
+    let existing = null;
+    try {
+      const snap = await otpRef.once('value');
+      existing = snap && typeof snap.val === 'function' ? snap.val() : snap?.val;
+    } catch (e) {
+      console.warn('⚠️ Could not read existing OTP, proceeding to generate a new one.', e);
+    }
+
+    let otp;
+    const ttlMs = 5 * 60 * 1000;
+    const nowMs = Date.now();
+    if (existing && existing.expiresAt && existing.expiresAt > nowMs && existing.otp) {
+      otp = String(existing.otp);
+      console.log(`♻️ Reusing existing unexpired OTP for ${email}`);
+    } else {
+      // Generate and store a new OTP
+      otp = await generateUniqueOtp();
+      console.log(`🔐 Generated unique OTP: ${otp} for ${email}`);
+    }
+
     console.log('💾 Storing OTP in Firebase:', emailHash, otp);
     console.log('🌐 Firebase Database URL:', process.env.FIREBASE_DATABASE_URL || 'https://delta-65-default-rtdb.asia-southeast1.firebasedatabase.app');
-    
+
     try {
-      await otpRef.set({ 
+      await otpRef.set({
         email: email,
         otp: otp,
-        expiresAt: Date.now() + (5 * 60 * 1000), // 5 minutes
-        attempts: 0,
-        sentAt: Date.now(),
-        generatedAt: Date.now()
+        expiresAt: nowMs + ttlMs,
+        attempts: existing?.attempts ?? 0,
+        sentAt: nowMs,
+        generatedAt: existing?.generatedAt ?? nowMs
       });
       console.log('✅ OTP stored successfully in Firebase');
-      
+
       // Verify the data was stored
       const verifySnapshot = await otpRef.once('value');
       const verifyData = verifySnapshot.val();
       console.log('🔍 Verification - Data in Firebase:', verifyData);
-      
+
     } catch (firebaseError) {
       console.error('❌ Error storing OTP in Firebase:', firebaseError);
       throw firebaseError;
@@ -243,6 +276,8 @@ Project Delta Team
     `;
     
     // Send email via Brevo or mock
+    // Remember the last send timestamp early to mitigate concurrent quick requests
+    otpSendLocks.set(emailHash, nowMs);
     const info = await sendEmail({ to: email, subject, html, text });
     
     const messageId = (info && (info.messageId || (info.messageIds && info.messageIds[0]))) || 'unknown';
@@ -264,45 +299,7 @@ Project Delta Team
   }
 });
 
-// Test email endpoint
-app.post('/test-email', async (req, res) => {
-  try {
-    const { email } = req.body;
-    
-    if (!email) {
-      return res.status(400).json({
-        success: false,
-        error: 'Email is required'
-      });
-    }
-    
-    const subject = '🧪 Project Delta - Email Service Test';
-    const text = 'This is a test email from Project Delta Email Service on Render. If you receive this, your email setup is working correctly!';
-    const html = `
-      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background-color: #000; color: #fff;">
-        <h1 style="color: #22c55e; text-align: center;">🧪 Email Service Test</h1>
-        <p style="color: #fff; text-align: center;">This is a test email from Project Delta Email Service on Render.</p>
-        <p style="color: #22c55e; text-align: center; font-weight: bold;">✅ If you receive this, your email setup is working correctly!</p>
-      </div>
-    `;
-    
-    const info = await sendEmail({ to: email, subject, html, text });
-    
-    res.json({
-      success: true,
-      messageId: (info && (info.messageId || (info.messageIds && info.messageIds[0]))) || 'unknown',
-      message: 'Test email sent successfully!'
-    });
-    
-  } catch (error) {
-    console.error('❌ Error sending test email:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to send test email',
-      details: error.message
-    });
-  }
-});
+
 
 // Password reset email endpoint
 app.post('/send-password-reset', async (req, res) => {
@@ -338,14 +335,7 @@ app.post('/send-password-reset', async (req, res) => {
       resetLink = `${actionUrl || 'https://example.com'}/reset-password?email=${encodeURIComponent(email)}&oobCode=mockCode123`;
       console.log('⚠️ Using mock reset link for testing:', resetLink);
       
-      // In production, we would return a generic success message
-      // to prevent email enumeration attacks
-      /* 
-      return res.json({
-        success: true,
-        message: 'Password reset process completed'
-      });
-      */
+      
     }
     
     // Email template
@@ -432,3 +422,35 @@ app.listen(PORT, () => {
   console.log(`📧 Gmail User: ${process.env.GMAIL_USER || 'Not configured'}`);
   console.log(`🔗 Health check: http://localhost:${PORT}/`);
 });
+
+// Periodic cleanup of expired OTPs
+async function cleanupExpiredOtps() {
+  try {
+    if (!db || typeof db.ref !== 'function') return;
+    console.log('🧹 Starting OTP cleanup...');
+    const snap = await db.ref('otp').once('value');
+    const data = snap && typeof snap.val === 'function' ? snap.val() : snap?.val;
+    const all = typeof data === 'function' ? data() : data;
+    if (!all || typeof all !== 'object') {
+      console.log('✅ No OTPs to clean up');
+      return;
+    }
+    const now = Date.now();
+    const entries = Object.entries(all);
+    let removed = 0;
+    await Promise.all(entries.map(async ([key, value]) => {
+      if (!value || !value.expiresAt || value.expiresAt <= now) {
+        await db.ref(`otp/${key}`).remove();
+        removed++;
+      }
+    }));
+    console.log(`🧽 OTP cleanup completed. Removed ${removed} expired entries.`);
+  } catch (e) {
+    console.error('❌ OTP cleanup failed:', e);
+  }
+}
+
+// Kick off periodic cleanup every 5 minutes
+setInterval(cleanupExpiredOtps, 5 * 60 * 1000);
+// Also run once shortly after startup
+setTimeout(cleanupExpiredOtps, 15 * 1000);
