@@ -114,6 +114,35 @@ async function sendEmail({ to, subject, html, text }) {
   return { messageId: 'mock-message-id-' + Date.now(), response: 'Mock email sent successfully' };
 }
 
+// Generate a 6-digit OTP and ensure it's not currently used in the database (best-effort)
+async function generateUniqueOtp() {
+  const generate = () => String(Math.floor(100000 + Math.random() * 900000));
+
+  // If no real DB, just return a random OTP
+  if (!adminInitialized || !db || typeof db.ref !== 'function') {
+    return generate();
+  }
+
+  // Try a few times to avoid collisions
+  for (let i = 0; i < 5; i++) {
+    const otp = generate();
+    try {
+      const snapshot = await db.ref('otp').once('value');
+      const all = snapshot && typeof snapshot.val === 'function' ? snapshot.val() : snapshot?.val;
+      const existing = typeof all === 'function' ? all() : all;
+      const isUsed = existing
+        ? Object.values(existing).some((entry) => entry && String(entry.otp) === otp)
+        : false;
+      if (!isUsed) return otp;
+    } catch (e) {
+      // On any read error, return the generated OTP (fallback)
+      return otp;
+    }
+  }
+  // If we somehow failed to find a unique code, just return a random one
+  return generate();
+}
+
 // Health check endpoint
 app.get('/', (req, res) => {
   res.json({
